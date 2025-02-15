@@ -1,0 +1,265 @@
+#ifndef cbi
+#define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
+#endif
+#ifndef sbi
+#define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
+#endif
+
+// Motor Driver Pins
+#define PWMA 5
+#define AIN1 6  // Left Motor Direction 1
+#define AIN2 7  // Left Motor Direction 2
+#define PWMB 9
+#define BIN1 11 // Right Motor Direction 1
+#define BIN2 10 // Right Motor Direction 2
+#define STBY 13
+
+// Encoder Pins
+#define LEFT_ENCODER_C1 2  // Left Encoder Signal 1
+#define LEFT_ENCODER_C2 3  // Left Encoder Signal 2
+#define RIGHT_ENCODER_C1 4 // Right Encoder Signal 1
+#define RIGHT_ENCODER_C2 8 // Right Encoder Signal 2
+
+// Robot Configuration
+bool isBlackLine = 1;  // 1 for black line, 0 for white line
+unsigned int numSensors = 8;
+
+// PID Control
+int P, D, I, previousError, PIDvalue;
+double error;
+int lsp, rsp;
+int lfSpeed = 150;
+int currentSpeed = 60;
+int sensorWeight[8] = {10, 4, 2, 1, -1, -2, -4, -10};
+int activeSensors;
+float Kp = 0.8;
+float Kd = 0.1;
+float Ki = 0.00;
+
+// Sensor Data
+int onLine = 1;
+int minValues[8], maxValues[8], threshold[8], sensorValue[8], sensorArray[8];
+
+// Encoder Counts
+volatile long leftEncoderCount = 0;
+volatile long rightEncoderCount = 0;
+
+void setup() {
+    sbi(ADCSRA, ADPS2);
+    cbi(ADCSRA, ADPS1);
+    cbi(ADCSRA, ADPS0);
+
+    Serial.begin(9600);
+    pinMode(STBY, OUTPUT);
+    digitalWrite(STBY, HIGH);
+    pinMode(PWMA, OUTPUT);
+    pinMode(AIN1, OUTPUT);
+    pinMode(AIN2, OUTPUT);
+    pinMode(PWMB, OUTPUT);
+    pinMode(BIN1, OUTPUT);
+    pinMode(BIN2, OUTPUT);
+
+    // Encoder Setup
+    pinMode(LEFT_ENCODER_C1, INPUT);
+    pinMode(LEFT_ENCODER_C2, INPUT);
+    pinMode(RIGHT_ENCODER_C1, INPUT);
+    pinMode(RIGHT_ENCODER_C2, INPUT);
+    attachInterrupt(digitalPinToInterrupt(LEFT_ENCODER_C1), leftEncoderISR, RISING);
+    attachInterrupt(digitalPinToInterrupt(RIGHT_ENCODER_C1), rightEncoderISR, RISING);
+
+    calibrate();
+    delay(1000);
+}
+
+void loop() {
+    readLine();
+    if (currentSpeed < lfSpeed) currentSpeed++;
+
+    if (onLine == 1) {
+        if (detectIntersection()) {
+            handleIntersection();
+        } else {
+            linefollow();
+        }
+    } else {
+        handleLostLine();
+    }
+}
+
+void motorLeft(int ispeed) {
+    ispeed = constrain(ispeed, -255, 255);
+    digitalWrite(AIN1, ispeed > 0);
+    digitalWrite(AIN2, ispeed < 0);
+    analogWrite(PWMA, abs(ispeed));
+}
+
+void motorRight(int ispeed) {
+    ispeed = constrain(ispeed, -255, 255);
+    digitalWrite(BIN1, ispeed > 0);
+    digitalWrite(BIN2, ispeed < 0);
+    analogWrite(PWMB, abs(ispeed));
+}
+
+void linefollow() {
+    error = 0;
+    activeSensors = 0;
+    for (int i = 0; i < 8; i++) {
+        error += sensorWeight[i] * sensorArray[i] * sensorValue[i];
+        activeSensors += sensorArray[i];
+    }
+    error = error / activeSensors;
+
+    P = error;
+    I = I + error;
+    D = error - previousError;
+    PIDvalue = (Kp * P) + (Ki * I) + (Kd * D);
+    previousError = error;
+
+    lsp = currentSpeed - PIDvalue;
+    rsp = currentSpeed + PIDvalue;
+    lsp = constrain(lsp, 0, 255);
+    rsp = constrain(rsp, 0, 255);
+
+    motorRight(lsp);
+    motorLeft(rsp);
+}
+
+void readLine() {
+    onLine = 0;
+    for (int i = 0; i < 8; i++) {
+        sensorValue[i] = map(analogRead(i), minValues[i], maxValues[i], isBlackLine ? 0 : 1000, isBlackLine ? 1000 : 0);
+        sensorValue[i] = constrain(sensorValue[i], 0, 1000);
+        sensorArray[i] = sensorValue[i] > 500;
+        if (sensorArray[i]) onLine = 1;
+    }
+}
+
+void handleLostLine() {
+    motorRight(-80);
+    motorLeft(80);
+    delay(200);
+}
+
+bool detectIntersection() {
+    int sensorCount = 0;
+    for (int i = 0; i < 8; i++) {
+        if (sensorArray[i]) sensorCount++;
+    }
+    return sensorCount >= 6;  // Adjust threshold for detecting an intersection
+}
+
+void handleIntersection() {
+    // Check for available paths (left, straight, right)
+    bool leftOpen = sensorArray[0] || sensorArray[1] || sensorArray[2];
+    bool straightOpen = sensorArray[3] || sensorArray[4];
+    bool rightOpen = sensorArray[5] || sensorArray[6] || sensorArray[7];
+
+    // Decide which path to take (prioritize left, straight, right)
+    if (leftOpen) {
+        turnLeft();
+    } else if (straightOpen) {
+        moveStraight();
+    } else if (rightOpen) {
+        turnRight();
+    } else {
+        turnAround();
+    }
+}
+
+void turnLeft() {
+    // Stop the robot
+    motorLeft(0);
+    motorRight(0);
+    delay(100);
+
+    // Turn left
+    motorLeft(-100);  // Left motor backward
+    motorRight(100);  // Right motor forward
+    delay(300);       // Adjust delay for 90-degree turn
+
+    // Stop the robot
+    motorLeft(0);
+    motorRight(0);
+    delay(100);
+}
+
+void turnRight() {
+    // Stop the robot
+    motorLeft(0);
+    motorRight(0);
+    delay(100);
+
+    // Turn right
+    motorLeft(100);   // Left motor forward
+    motorRight(-100); // Right motor backward
+    delay(300);       // Adjust delay for 90-degree turn
+
+    // Stop the robot
+    motorLeft(0);
+    motorRight(0);
+    delay(100);
+}
+
+void turnAround() {
+    // Stop the robot
+    motorLeft(0);
+    motorRight(0);
+    delay(100);
+
+    // Turn around (180 degrees)
+    motorLeft(100);   // Left motor forward
+    motorRight(-100); // Right motor backward
+    delay(600);       // Adjust delay for 180-degree turn
+
+    // Stop the robot
+    motorLeft(0);
+    motorRight(0);
+    delay(100);
+}
+
+void moveStraight() {
+    // Move straight
+    motorLeft(lfSpeed);
+    motorRight(lfSpeed);
+    delay(200);  // Move forward for a short duration
+}
+
+void leftEncoderISR() {
+    leftEncoderCount++;
+}
+
+void rightEncoderISR() {
+    rightEncoderCount++;
+}
+
+void calibrate() {
+    motorRight(100);
+    motorLeft(-100);
+    delay(1000);
+    motorRight(0);
+    motorLeft(0);
+
+    for (int i = 0; i < 8; i++) {
+        minValues[i] = analogRead(i);
+        maxValues[i] = analogRead(i);
+    }
+
+    for (int i = 0; i < 22100; i++) {
+        motorRight(100);
+        motorLeft(-100);
+        for (int j = 0; j < 8; j++) {
+            minValues[j] = min(minValues[j], analogRead(j));
+            maxValues[j] = max(maxValues[j], analogRead(j));
+        }
+    }
+
+    for (int i = 0; i < 8; i++) {
+        threshold[i] = (minValues[i] + maxValues[i]) / 2;
+        Serial.print(threshold[i]);
+        Serial.print(" ");
+    }
+    Serial.println();
+
+    motorRight(0);
+    motorLeft(0);
+}
