@@ -1,0 +1,28 @@
+// Define the number of sensors
+#define NUM_SENSORS 8
+
+// Define the sensor pins
+const int sensorPins[NUM_SENSORS] = {A0, A1, A2, A3, A4, A5, A6, A7};
+
+void setup() {
+    // Initialize Serial communication
+    Serial.begin(115200);
+
+    // Print header for sensor values
+    Serial.println("Sensor Values:");
+}
+
+void loop() {
+    // Read and print sensor values
+    for (int i = 0; i < NUM_SENSORS; i++) {
+        int sensorValue = analogRead(sensorPins[i]);
+        sensorValue = 1023 - sensorValue;  // Invert the sensor value
+        Serial.print("Sensor ");
+        Serial.print(i);
+        Serial.print(": ");
+        Serial.print(sensorValue);
+        Serial.print("\t");  // Tab separator
+    }
+    Serial.println();  // New line after all sensors are printed
+    delay(100);  // Delay for readability
+}
